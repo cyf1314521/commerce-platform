@@ -1,0 +1,58 @@
+# 与 application.yaml 一致：MySQL dingping / root:290390，Redis 6379，RabbitMQ hmdp/hmdp
+# 首次启动 MySQL 会自动导入 src/main/resources/db/hmdp.sql（仅新建数据卷时执行一次）
+# 使用：docker compose up -d
+# 若改端口，请同步修改 application.yaml
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: hmdp-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "290390"
+      MYSQL_DATABASE: dingping
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - hmdp-mysql-data:/var/lib/mysql
+      - ./src/main/resources/db/hmdp.sql:/docker-entrypoint-initdb.d/hmdp.sql:ro
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p290390"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: hmdp-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: hmdp-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: hmdp
+      RABBITMQ_DEFAULT_PASS: hmdp
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  hmdp-mysql-data:

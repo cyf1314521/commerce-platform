@@ -1,0 +1,33 @@
+  server:
+    port: 8081
+  spring:
+    rabbitmq:
+      host: localhost
+      port: 5672
+      # guest 在「Docker 映射 5672」时从本机连常被拒绝；与 docker-compose 中账号一致
+      username: hmdp
+      password: hmdp
+    application:
+      name: hmdp
+    datasource:
+      driver-class-name: com.mysql.jdbc.Driver
+      url: jdbc:mysql://127.0.0.1:3306/dingping?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      username: root
+      password: 290390
+    redis:
+      host: 127.0.0.1
+      port: 6379
+
+      lettuce:
+        pool:
+          max-active: 30
+          max-idle: 15
+          min-idle: 5
+          time-between-eviction-runs: 10s
+    jackson:
+      default-property-inclusion: non_null # JSON处理时忽略非空字段
+  mybatis-plus:
+    type-aliases-package: com.hmdp.entity # 别名扫描包
+  logging:
+    level:
+      com.hmdp: debug
