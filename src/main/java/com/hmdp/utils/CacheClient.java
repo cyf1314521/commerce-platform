@@ -1,15 +1,18 @@
 package com.hmdp.utils;
 
 import cn.hutool.core.util.BooleanUtil;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
-import com.hmdp.entity.Shop;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -19,6 +22,14 @@ import java.util.function.Function;
 @Component
 public class CacheClient {
     private final StringRedisTemplate stringRedisTemplate;
+    private static final String LOCK_VALUE_PREFIX = UUID.randomUUID().toString(true) + "-";
+    private static final DefaultRedisScript<Long> UNLOCK_SCRIPT;
+
+    static {
+        UNLOCK_SCRIPT = new DefaultRedisScript<>();
+        UNLOCK_SCRIPT.setLocation(new ClassPathResource("unLock.lua"));
+        UNLOCK_SCRIPT.setResultType(Long.class);
+    }
 
 
     public CacheClient(StringRedisTemplate stringRedisTemplate) {
@@ -69,6 +80,41 @@ public class CacheClient {
 
     }
 
+    public <R, ID> R queryWithMutex(
+            String keyPrefix, ID id, Class<R> type, Function<ID, R> dbFallback, Long time, TimeUnit unit) {
+        String key = keyPrefix + id;
+        String json = stringRedisTemplate.opsForValue().get(key);
+        if (StrUtil.isNotBlank(json)) {
+            return JSONUtil.toBean(json, type);
+        }
+        if (json != null) {
+            return null;
+        }
+
+        String lockKey = RedisConstants.LOCK_SHOP_KEY + id;
+        String lockValue = LOCK_VALUE_PREFIX + Thread.currentThread().getId();
+        R r;
+        try {
+            boolean isLock = tryLock(lockKey, lockValue);
+            if (!isLock) {
+                Thread.sleep(50);
+                return queryWithMutex(keyPrefix, id, type, dbFallback, time, unit);
+            }
+            r = dbFallback.apply(id);
+            if (r == null) {
+                stringRedisTemplate.opsForValue().set(key, "", RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
+                return null;
+            }
+            this.set(key, r, time, unit);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        } finally {
+            unLock(lockKey, lockValue);
+        }
+        return r;
+    }
+
 
     private static final ExecutorService CACHE_REBUILD_EXECUTOR= Executors.newFixedThreadPool(10);
     public <R,ID> R queryWithLogicalExpire(
@@ -96,7 +142,8 @@ public class CacheClient {
         //6.缓存重建
         //6.1.获取互斥锁
         String lockKey=RedisConstants.LOCK_SHOP_KEY+id;
-        boolean isLock = tryLock(lockKey);
+        String lockValue = LOCK_VALUE_PREFIX + Thread.currentThread().getId();
+        boolean isLock = tryLock(lockKey, lockValue);
         //6.2.判断是否获取锁成功
         if(isLock){
             //  6.3.成功，开启独立线程实现缓存重建
@@ -110,7 +157,7 @@ public class CacheClient {
                     throw new RuntimeException(e);
                 }finally {
                     //释放锁
-                    unLock(key);
+                    unLock(lockKey, lockValue);
                 }
             });
 
@@ -125,8 +172,8 @@ public class CacheClient {
      * @param key
      * @return
      */
-    private boolean tryLock(String key){
-        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
+    private boolean tryLock(String key, String lockValue){
+        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, lockValue, 10, TimeUnit.SECONDS);
         return BooleanUtil.isTrue(flag);
     }
 
@@ -134,7 +181,11 @@ public class CacheClient {
      * 封闭锁
      * @param key
      */
-    private void unLock(String key){
-        stringRedisTemplate.delete(key);
+    private void unLock(String key, String lockValue){
+        stringRedisTemplate.execute(
+                UNLOCK_SCRIPT,
+                Collections.singletonList(key),
+                lockValue
+        );
     }
 }
